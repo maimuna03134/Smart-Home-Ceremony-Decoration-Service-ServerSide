@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 const admin = require("firebase-admin");
 const serviceAccount = require('./homeDecorationServiceAdminSDK.json');
@@ -33,11 +33,18 @@ async function run() {
     const db = client.db("decor-service");
     const serviceCollection = db.collection("services");
 
-    app.get('/services', async (req, res) => {
-      const cursor = serviceCollection.find();
-      const result = await cursor.toArray();
-      res.send(result)
-    })
+      app.get("/services", async (req, res) => {
+        const result = await serviceCollection.find().toArray();
+        res.send(result);
+      });
+       app.get("/services/:id", async (req, res) => {
+         const id = req.params.id;
+         const result = await serviceCollection.findOne({
+           _id: new ObjectId(id),
+         });
+         res.send(result);
+       });
+  
     app.post('/services', async (req, res) => {
       const newService = req.body;
       const result = await serviceCollection.insertOne(newService);

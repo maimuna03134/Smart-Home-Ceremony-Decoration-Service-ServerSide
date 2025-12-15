@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
 const serviceAccount = require('./homeDecorationServiceAdminSDK.json');
 const app = express();
@@ -51,6 +52,82 @@ async function run() {
       res.send(result)
     })
 
+    // payment related APIs
+app.post("/create-checkout-session", async (req, res) => {
+  const paymentInfo = req.body;
+  console.log(paymentInfo);
+  const session = await stripe.checkout.sessions.create({
+    line_items: [
+      {
+        price_data: {
+          currency: "BDT",
+          product_data: {
+            name: paymentInfo?.name,
+            description: paymentInfo?.description,
+            images: [paymentInfo.image],
+          },
+          unit_amount: paymentInfo?.price * 100,
+        },
+        quantity: paymentInfo?.quantity,
+      },
+    ],
+    customer_email: paymentInfo?.customer?.email,
+    mode: "payment",
+    metadata: {
+      plantId: paymentInfo?.serviceId,
+      customer: paymentInfo?.customer.email,
+    },
+    success_url: `${process.env.SITE_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.SITE_DOMAIN}/plant/${paymentInfo?.serviceId}`,
+  });
+  res.send({ url: session.url });
+});
+
+app.post("/payment-success", async (req, res) => {
+  const { sessionId } = req.body;
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
+  const service = await serviceCollection.findOne({
+    _id: new ObjectId(session.metadata.serviceId),
+  });
+  const booking = await bookingsCollection.findOne({
+    transactionId: session.payment_intent,
+  });
+
+  if (session.status === "complete" && service && !booking) {
+    // save order data in db
+    const bookingInfo = {
+      serviceId: session.metadata.serviceId,
+      transactionId: session.payment_intent,
+      customer: session.metadata.customer,
+      status: "pending",
+      decor: service.decor,
+      name: service.name,
+      category: service.category,
+      quantity: 1,
+      price: session.amount_total / 100,
+      image: service?.image,
+    };
+    const result = await bookingsCollection.insertOne(bookingInfo);
+    // update plant quantity
+    await bookingsCollection.updateOne(
+      {
+        _id: new ObjectId(session.metadata.serviceId),
+      },
+      { $inc: { quantity: -1 } }
+    );
+
+    return res.send({
+      transactionId: session.payment_intent,
+      bookingId: result.insertedId,
+    });
+  }
+  res.send(
+    res.send({
+      transactionId: session.payment_intent,
+      bookingId: booking._id,
+    })
+  );
+});
     // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"

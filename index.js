@@ -142,40 +142,35 @@ async function run() {
       res.send(result);
     });
 
-    // Update booking payment status
-    app.patch("/bookings/:id/payment", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const { paymentStatus, transactionId } = req.body;
+    // Update booking (date and location only for unpaid bookings)
+    app.patch("/bookings/:id", async (req, res) => {
+      const id = req.params.id;
+      const { bookingDate, location } = req.body;
 
-        const booking = await bookingsCollection.findOne({
-          _id: new ObjectId(id),
-        });
+      console.log(id)
 
-        if (!booking) {
-          return res.status(404).send({ message: "Booking not found" });
-        }
+      const booking = await bookingsCollection.findOne({
+        _id: new ObjectId(id),
+      });
 
-        if (req.decoded.email !== booking.userEmail) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
-
-        const result = await bookingsCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              paymentStatus: paymentStatus,
-              transactionId: transactionId,
-              updatedAt: new Date().toISOString(),
-            },
-          }
-        );
-
-        res.send(result);
-      } catch (error) {
-        console.error("Update payment status error:", error);
-        res.status(500).send({ message: "Failed to update payment status" });
+       if (booking.payment_status === "Paid") {
+         return res.status(400).send({
+           message: "Cannot update paid booking. Please contact support.",
+         });
       }
+      
+      const result = await bookingsCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            bookingDate: bookingDate,
+            location: location,
+            updatedAt: new Date().toISOString(),
+          },
+        }
+      );
+
+      res.send(result);
     });
 
     // get all bookings for a customer by email
@@ -190,40 +185,36 @@ async function run() {
     });
 
     // get all bookings for a decorator by email
-    app.get(
-      "/manage-booking/user/:email",
-      async (req, res) => {
-        const email = req.params.email;
+    app.get("/manage-booking/user/:email", async (req, res) => {
+      const email = req.params.email;
 
-        const result = await bookingsCollection
-          .find({ "decorator.email": email })
-          .toArray();
-        res.send(result);
-      }
-    );
+      const result = await bookingsCollection
+        .find({ "decorator.email": email })
+        .toArray();
+      res.send(result);
+    });
 
-    //     app.get("/my-booking/user/:email", async (req, res) => {
-    //       try {
-    //         const email = req.params.email;
+    // get all service for a decorator by email
+    app.get("/my-inventory/user/:email", async (req, res) => {
+      const email = req.params.email;
 
-    //         console.log("💳 Fetching payments for:", email);
+      const result = await serviceCollection
+        .find({ "decorator.email": email })
+        .toArray();
+      res.send(result);
+    });
 
-    //         const payments = await paymentsCollection
-    //           .find({ userEmail: email })
-    //           .sort({ paymentDate: -1 })
-    //           .toArray();
+    // Get all payments for a user
+    app.get("/payments/user/:email", async (req, res) => {
+      const email = req.params.email;
 
-    //         console.log("✅ Found", payments.length, "payments");
+      const payments = await paymentsCollection
+        .find({ customer: email })
+        .sort({ paymentDate: -1 })
+        .toArray();
 
-    //         res.send(payments);
-    //       } catch (error) {
-    //         console.error("❌ Get payments error:", error);
-    //         res.status(500).send({
-    //           message: "Failed to fetch payments",
-    //           error: error.message,
-    //         });
-    //       }
-    //     });
+      res.send(payments);
+    });
 
     // payment related APIs
     app.post("/create-checkout-session", async (req, res) => {
@@ -310,6 +301,7 @@ async function run() {
         })
       );
     });
+
     //  app.post("/dashboard/my-bookings", async (req, res) => {
     //    const { sessionId } = req.body;
     //    const session = await stripe.checkout.sessions.retrieve(sessionId);

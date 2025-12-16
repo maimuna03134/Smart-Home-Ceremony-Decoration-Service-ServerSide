@@ -7,6 +7,15 @@ const admin = require("firebase-admin");
 const serviceAccount = require("./homeDecorationServiceAdminSDK.json");
 const app = express();
 const port = process.env.PORT || 5000;
+// const crypto = require("crypto");
+
+// function generateTrackingId() {
+//   const prefix = "PRCL"; // your brand prefix
+//   const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+//   const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
+
+//   return `${prefix}-${date}-${random}`;
+// }
 
 app.use(cors());
 app.use(express.json());
@@ -105,26 +114,27 @@ async function run() {
     //   }
     // });
 
+    // Create a new booking
     app.post("/bookings", async (req, res) => {
-      const newBooking = req.body;
-      newBooking.createdAt = new Date();
-      const result = await bookingsCollection.insertOne(newBooking);
+      const booking = req.body;
+      booking.createdAt = new Date();
+      const result = await bookingsCollection.insertOne(booking);
       res.send(result);
     });
 
-    app.get("/bookings", async (req, res) => {
-      const query = {};
-      const { email } = req.query;
-      if (email) {
-        query.senderEmail = email;
-      }
-      const options = { sort: { createdAt: -1 } };
+    // Get all bookings for a specific user
+    app.get("/bookings/user/:email", async (req, res) => {
+      const email = req.params.email;
 
-      const cursor = bookingsCollection.find(query, options);
-      const result = await cursor.toArray();
-      res.send(result);
+      const bookings = await bookingsCollection
+        .find({ userEmail: email })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.send(bookings);
     });
 
+    // Get a single booking by ID
     app.get("/bookings/:id", async (req, res) => {
       const id = req.params.id;
       const query = { _id: new ObjectId(id) };
@@ -132,80 +142,31 @@ async function run() {
       res.send(result);
     });
 
+    // Cancel/Delete a booking
     app.delete("/bookings/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
 
-      const result = await bookingsCollection.deleteOne(query);
-      res.send(result);
-    });
+      const booking = await bookingsCollection.findOne({
+        _id: new ObjectId(id),
+      });
 
-    // payment apis
- app.post("/payment-checkout-session", async (req, res) => {
-   const paymentInfo = req.body;
-   const amount = parseInt(paymentInfo.cost) * 100;
-   const session = await stripe.checkout.sessions.create({
-     line_items: [
-       {
-         price_data: {
-           currency: "usd",
-           unit_amount: amount,
-           product_data: {
-             name: `Please pay for: ${paymentInfo.serviceName}`,
-           },
-         },
-         quantity: 1,
-       },
-     ],
-     mode: "payment",
-     metadata: {
-       serviceId: paymentInfo.serviceId,
-     },
-     customer_email: paymentInfo.senderEmail,
-     success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-     cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
-   });
-
-   res.send({ url: session.url });
- });
-    
-    // Get all bookings for a specific user
-    // app.get("/bookings/user/:email", async (req, res) => {
-    //   const email = req.params.email;
-
-    //    if (req.decoded.email !== email) {
-    //      return res.status(403).send({ message: "Forbidden access" });
-    //   }
-      
-    //    const bookings = await bookingsCollection
-    //      .find({ userEmail: email })
-    //      .sort({ createdAt: -1 })
-    //      .toArray();
-
-    //    res.send(bookings);
-    // });
-
-    // Get a single booking by ID
-    app.get("/bookings/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        const booking = await bookingsCollection.findOne({
-          _id: new ObjectId(id),
+      if (!booking) {
+        return res.status(404).send({
+          message: "Booking not found",
         });
-
-        if (!booking) {
-          return res.status(404).send({ message: "Booking not found" });
-        }
-
-        if (req.decoded.email !== booking.userEmail) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
-
-        res.send(booking);
-      } catch (error) {
-        console.error("Get booking error:", error);
-        res.status(500).send({ message: "Failed to fetch booking" });
       }
+
+      if (booking.paymentStatus === "Paid") {
+        return res.status(400).send({
+          message: "Cannot cancel a paid booking. Please contact support.",
+        });
+      }
+
+      const result = await bookingsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      res.send(result);
     });
 
     // Update booking payment status
@@ -244,149 +205,158 @@ async function run() {
       }
     });
 
-    // Cancel/Delete a booking
-    app.delete("/bookings/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-
-        const booking = await bookingsCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!booking) {
-          return res.status(404).send({ message: "Booking not found" });
-        }
-
-        if (req.decoded.email !== booking.userEmail) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
-
-        // Check if booking is already paid
-        if (booking.paymentStatus === "Paid") {
-          return res.status(400).send({
-            message: "Cannot cancel a paid booking. Please contact support.",
-          });
-        }
-
-        const result = await bookingsCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
-
-        res.send(result);
-      } catch (error) {
-        console.error("Delete booking error:", error);
-        res.status(500).send({ message: "Failed to cancel booking" });
-      }
-    });
-
     // payment related APIs
-    app.post("/create-checkout-intent", async (req, res) => {
-      try {
-        const { price, bookingId } = req.body;
-        const amount = parseInt(price * 100);
-
-        // Create payment intent
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: amount,
-          currency: "bdt",
-          payment_method_types: ["card"],
-          metadata: {
-            bookingId: bookingId,
-          },
-        });
-
-        res.send({
-          clientSecret: paymentIntent.client_secret,
-        });
-      } catch (error) {
-        console.error("Payment intent error:", error);
-        res.status(500).send({ message: "Failed to create payment intent" });
-      }
-    });
-
-    // Save payment to database
-    app.post("/payments", async (req, res) => {
-      try {
-        const payment = req.body;
-
-        if (req.decoded.email !== payment.userEmail) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
-
-        const result = await paymentsCollection.insertOne(payment);
-        res.send(result);
-      } catch (error) {
-        console.error("Save payment error:", error);
-        res.status(500).send({ message: "Failed to save payment" });
-      }
-    });
-
-    // Get all payments for a user
-    app.get("/payments/user/:email", async (req, res) => {
-      try {
-        const email = req.params.email;
-
-        if (req.decoded.email !== email) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
-
-        const payments = await paymentsCollection
-          .find({ userEmail: email })
-          .sort({ paymentDate: -1 })
-          .toArray();
-
-        res.send(payments);
-      } catch (error) {
-        console.error("Get payments error:", error);
-        res.status(500).send({ message: "Failed to fetch payments" });
-      }
-    });
-
-    app.post("/payment-success", async (req, res) => {
-      const { sessionId } = req.body;
-      const session = await stripe.checkout.sessions.retrieve(sessionId);
-      const service = await serviceCollection.findOne({
-        _id: new ObjectId(session.metadata.serviceId),
-      });
-      const booking = await bookingsCollection.findOne({
-        transactionId: session.payment_intent,
-      });
-
-      if (session.status === "complete" && service && !booking) {
-        // save order data in db
-        const bookingInfo = {
-          serviceId: session.metadata.serviceId,
-          transactionId: session.payment_intent,
-          customer: session.metadata.customer,
-          status: "pending",
-          decor: service.decor,
-          name: service.name,
-          category: service.category,
-          quantity: 1,
-          price: session.amount_total / 100,
-          image: service?.image,
-        };
-        const result = await bookingsCollection.insertOne(bookingInfo);
-        // update plant quantity
-        await bookingsCollection.updateOne(
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      console.log(paymentInfo);
+      console.log(paymentInfo.serviceImage);
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
           {
-            _id: new ObjectId(session.metadata.serviceId),
+            price_data: {
+              currency: "bdt",
+              product_data: {
+                name: paymentInfo?.serviceName,
+                description: paymentInfo?.serviceCategory,
+                images: [paymentInfo?.serviceImage],
+              },
+              unit_amount: paymentInfo?.servicePrice * 100,
+            },
+            quantity: 1,
           },
-          { $inc: { quantity: -1 } }
-        );
-
-        return res.send({
-          transactionId: session.payment_intent,
-          bookingId: result.insertedId,
-        });
-      }
-      res.send(
-        res.send({
-          transactionId: session.payment_intent,
-          bookingId: booking._id,
-        })
-      );
+        ],
+        customer_email: paymentInfo?.customer?.email,
+        mode: "payment",
+        metadata: {
+          bookingId: paymentInfo?.bookingId,
+          customer: paymentInfo?.customer.email,
+        },
+        success_url: `${process.env.CLIENT_DOMAIN}/payment-success`,
+        cancel_url: `${process.env.CLIENT_DOMAIN}/dashboard/my-bookings`,
+      });
+      res.send({ url: session.url });
     });
+
+    //  app.post("/payment-success", async (req, res) => {
+    //    const { sessionId } = req.body;
+    //    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    //    const service = await serviceCollection.findOne({
+    //      _id: new ObjectId(session.metadata.serviceId),
+    //    });
+    //    const booking = await bookingsCollection.findOne({
+    //      transactionId: session.payment_intent,
+    //    });
+
+    //    if (session.status === "complete" && service && !booking) {
+    //      // save order data in db
+    //      const bookingInfo = {
+    //        bookingId: session.metadata.bookingId,
+    //        transactionId: session.payment_intent,
+    //        customer: session.metadata.customer,
+    //        status: "pending",
+    //        seller: plant.seller,
+    //        name: plant.name,
+    //        category: plant.category,
+    //        quantity: 1,
+    //        price: session.amount_total / 100,
+    //        image: plant?.image,
+    //      };
+    //      const result = await ordersCollection.insertOne(orderInfo);
+    //      // update plant quantity
+    //      await plantsCollection.updateOne(
+    //        {
+    //          _id: new ObjectId(session.metadata.plantId),
+    //        },
+    //        { $inc: { quantity: -1 } }
+    //      );
+
+    //      return res.send({
+    //        transactionId: session.payment_intent,
+    //        orderId: result.insertedId,
+    //      });
+    //    }
+    //    res.send(
+    //      res.send({
+    //        transactionId: session.payment_intent,
+    //        orderId: order._id,
+    //      })
+    //    );
+    //  });
+
+    // Get all bookings for a specific user
+    // app.get("/bookings/user/:email", async (req, res) => {
+    //   const email = req.params.email;
+
+    //    if (req.decoded.email !== email) {
+    //      return res.status(403).send({ message: "Forbidden access" });
+    //   }
+
+    //    const bookings = await bookingsCollection
+    //      .find({ userEmail: email })
+    //      .sort({ createdAt: -1 })
+    //      .toArray();
+
+    //    res.send(bookings);
+    // });
+
+    // Get a single booking by ID
+    // app.get("/bookings/:id", async (req, res) => {
+    //   try {
+    //     const id = req.params.id;
+    //     const booking = await bookingsCollection.findOne({
+    //       _id: new ObjectId(id),
+    //     });
+
+    //     if (!booking) {
+    //       return res.status(404).send({ message: "Booking not found" });
+    //     }
+
+    //     if (req.decoded.email !== booking.userEmail) {
+    //       return res.status(403).send({ message: "Forbidden access" });
+    //     }
+
+    //     res.send(booking);
+    //   } catch (error) {
+    //     console.error("Get booking error:", error);
+    //     res.status(500).send({ message: "Failed to fetch booking" });
+    //   }
+    // });
+
+    // Cancel/Delete a booking
+    // app.delete("/bookings/:id", async (req, res) => {
+    //   try {
+    //     const id = req.params.id;
+
+    //     const booking = await bookingsCollection.findOne({
+    //       _id: new ObjectId(id),
+    //     });
+
+    //     if (!booking) {
+    //       return res.status(404).send({ message: "Booking not found" });
+    //     }
+
+    //     if (req.decoded.email !== booking.userEmail) {
+    //       return res.status(403).send({ message: "Forbidden access" });
+    //     }
+
+    //     // Check if booking is already paid
+    //     if (booking.paymentStatus === "Paid") {
+    //       return res.status(400).send({
+    //         message: "Cannot cancel a paid booking. Please contact support.",
+    //       });
+    //     }
+
+    //     const result = await bookingsCollection.deleteOne({
+    //       _id: new ObjectId(id),
+    //     });
+
+    //     res.send(result);
+    //   } catch (error) {
+    //     console.error("Delete booking error:", error);
+    //     res.status(500).send({ message: "Failed to cancel booking" });
+    //   }
+    // });
+
     // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"

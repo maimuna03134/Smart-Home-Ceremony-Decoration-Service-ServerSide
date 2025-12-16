@@ -88,33 +88,6 @@ async function run() {
     });
 
     // Create a new booking
-    // app.post("/bookings", async (req, res) => {
-    //   try {
-    //     const booking = req.body;
-
-    //     if (req.decoded.email !== booking.userEmail) {
-    //       return res.status(403).send({ message: "Forbidden access" });
-    //     }
-
-    //      if (
-    //        !booking.serviceName ||
-    //        !booking.bookingDate ||
-    //        !booking.location
-    //      ) {
-    //        return res.status(400).send({
-    //          message: "Missing required fields",
-    //        });
-    //      }
-
-    //     const result = await bookingsCollection.insertOne(booking);
-    //     res.send(result);
-    //   } catch (error) {
-    //     console.error("Create booking error:", error);
-    //     res.status(500).send({ message: "Failed to create booking" });
-    //   }
-    // });
-
-    // Create a new booking
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
       booking.createdAt = new Date();
@@ -205,6 +178,53 @@ async function run() {
       }
     });
 
+    // get all bookings for a customer by email
+    app.get("/my-booking/user/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await bookingsCollection
+        .find({
+          userEmail: email,
+        })
+        .toArray();
+      res.send(result);
+    });
+
+    // get all bookings for a decorator by email
+    app.get(
+      "/manage-booking/user/:email",
+      async (req, res) => {
+        const email = req.params.email;
+
+        const result = await bookingsCollection
+          .find({ "decorator.email": email })
+          .toArray();
+        res.send(result);
+      }
+    );
+
+    //     app.get("/my-booking/user/:email", async (req, res) => {
+    //       try {
+    //         const email = req.params.email;
+
+    //         console.log("💳 Fetching payments for:", email);
+
+    //         const payments = await paymentsCollection
+    //           .find({ userEmail: email })
+    //           .sort({ paymentDate: -1 })
+    //           .toArray();
+
+    //         console.log("✅ Found", payments.length, "payments");
+
+    //         res.send(payments);
+    //       } catch (error) {
+    //         console.error("❌ Get payments error:", error);
+    //         res.status(500).send({
+    //           message: "Failed to fetch payments",
+    //           error: error.message,
+    //         });
+    //       }
+    //     });
+
     // payment related APIs
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
@@ -231,54 +251,107 @@ async function run() {
           bookingId: paymentInfo?.bookingId,
           customer: paymentInfo?.customer.email,
         },
-        success_url: `${process.env.CLIENT_DOMAIN}/payment-success`,
+        success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_DOMAIN}/dashboard/my-bookings`,
       });
       res.send({ url: session.url });
     });
 
-    //  app.post("/payment-success", async (req, res) => {
+    app.post("/payment-success", async (req, res) => {
+      const { sessionId } = req.body;
+      const session = await stripe.checkout.sessions.retrieve(sessionId);
+      console.log(session);
+      const payments = await paymentsCollection.findOne({
+        _id: new ObjectId(session.metadata.bookingId),
+      });
+      const existingPayment = await bookingsCollection.findOne({
+        transactionId: session.payment_intent,
+      });
+
+      // Save payment record
+      if (session.status === "complete" && payments && !existingPayment) {
+        const paymentRecord = {
+          paymentId: session.metadata.bookingId,
+          transactionId: session.payment_intent,
+          customer: session.metadata.customer,
+          status: "pending",
+          decorator: payments.decorator,
+          name: payments.name,
+          category: payments.category,
+          quantity: 1,
+          price: session.amount_total / 100,
+          image: payments?.image,
+          paymentDate: new Date().toISOString(),
+        };
+        const result = await paymentsCollection.insertOne(paymentRecord);
+
+        await bookingsCollection.updateOne(
+          {
+            _id: new ObjectId(session.metadata.bookingId),
+          },
+          {
+            $set: {
+              paymentStatus: "Paid",
+              transactionId: session.payment_intent,
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+
+        return res.send({
+          transactionId: session.payment_intent,
+          paymentId: result.insertedId,
+        });
+      }
+      res.send(
+        res.send({
+          transactionId: session.payment_intent,
+          paymentId: existingPayment._id,
+        })
+      );
+    });
+    //  app.post("/dashboard/my-bookings", async (req, res) => {
     //    const { sessionId } = req.body;
     //    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    //    const service = await serviceCollection.findOne({
-    //      _id: new ObjectId(session.metadata.serviceId),
+    //    console.log(session);
+    //    const payments = await paymentsCollection.findOne({
+    //      _id: new ObjectId(session.metadata.bookingId),
     //    });
     //    const booking = await bookingsCollection.findOne({
     //      transactionId: session.payment_intent,
     //    });
 
-    //    if (session.status === "complete" && service && !booking) {
-    //      // save order data in db
-    //      const bookingInfo = {
-    //        bookingId: session.metadata.bookingId,
+    //    // Save payment record
+    //    if (session.status === "complete" && payments && !booking) {
+    //      const paymentRecord = {
+    //        paymentId: session.metadata.bookingId,
     //        transactionId: session.payment_intent,
     //        customer: session.metadata.customer,
     //        status: "pending",
-    //        seller: plant.seller,
-    //        name: plant.name,
-    //        category: plant.category,
+    //        decorator: payments.seller,
+    //        name: payments.name,
+    //        category: payments.category,
     //        quantity: 1,
     //        price: session.amount_total / 100,
-    //        image: plant?.image,
+    //        image: payments?.image,
     //      };
-    //      const result = await ordersCollection.insertOne(orderInfo);
-    //      // update plant quantity
-    //      await plantsCollection.updateOne(
-    //        {
-    //          _id: new ObjectId(session.metadata.plantId),
-    //        },
-    //        { $inc: { quantity: -1 } }
-    //      );
+    //      const result = await paymentsCollection.insertOne(paymentRecord);
+    //      //  await bookingsCollection.updateOne(
+    //      //    {
+    //      //      _id: new ObjectId(session.metadata.bookingId),
+    //      //    },
+    //      //    { $inc: { quantity: -1 } }
+    //      //  );
 
     //      return res.send({
     //        transactionId: session.payment_intent,
-    //        orderId: result.insertedId,
+    //        paymentsId: result.insertedId,
     //      });
     //    }
     //    res.send(
     //      res.send({
     //        transactionId: session.payment_intent,
-    //        orderId: order._id,
+    //        paymentsId: booking._id,
     //      })
     //    );
     //  });

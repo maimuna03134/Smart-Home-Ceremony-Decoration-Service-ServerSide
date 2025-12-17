@@ -147,18 +147,18 @@ async function run() {
       const id = req.params.id;
       const { bookingDate, location } = req.body;
 
-      console.log(id)
+      console.log(id);
 
       const booking = await bookingsCollection.findOne({
         _id: new ObjectId(id),
       });
 
-       if (booking.payment_status === "Paid") {
-         return res.status(400).send({
-           message: "Cannot update paid booking. Please contact support.",
-         });
+      if (booking.payment_status === "Paid") {
+        return res.status(400).send({
+          message: "Cannot update paid booking. Please contact support.",
+        });
       }
-      
+
       const result = await bookingsCollection.updateOne(
         { _id: new ObjectId(id) },
         {
@@ -219,8 +219,8 @@ async function run() {
     // payment related APIs
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
-      console.log(paymentInfo);
-      console.log(paymentInfo.serviceImage);
+      // console.log(paymentInfo);
+      // console.log(paymentInfo.serviceImage);
       const session = await stripe.checkout.sessions.create({
         line_items: [
           {
@@ -241,6 +241,7 @@ async function run() {
         metadata: {
           bookingId: paymentInfo?.bookingId,
           customer: paymentInfo?.customer.email,
+          serviceName: paymentInfo?.serviceName,
         },
         success_url: `${process.env.CLIENT_DOMAIN}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.CLIENT_DOMAIN}/dashboard/my-bookings`,
@@ -248,181 +249,52 @@ async function run() {
       res.send({ url: session.url });
     });
 
-    app.post("/payment-success", async (req, res) => {
-      const { sessionId } = req.body;
+    
+    
+    app.patch("/payment-success", async (req, res) => {
+      const { sessionId } = req.body; 
+
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      console.log(session);
-      const payments = await paymentsCollection.findOne({
-        _id: new ObjectId(session.metadata.bookingId),
-      });
-      const existingPayment = await bookingsCollection.findOne({
-        transactionId: session.payment_intent,
-      });
 
-      // Save payment record
-      if (session.status === "complete" && payments && !existingPayment) {
-        const paymentRecord = {
-          paymentId: session.metadata.bookingId,
-          transactionId: session.payment_intent,
-          customer: session.metadata.customer,
-          status: "pending",
-          decorator: payments.decorator,
-          name: payments.name,
-          category: payments.category,
-          quantity: 1,
-          price: session.amount_total / 100,
-          image: payments?.image,
-          paymentDate: new Date().toISOString(),
-        };
-        const result = await paymentsCollection.insertOne(paymentRecord);
-
-        await bookingsCollection.updateOne(
-          {
-            _id: new ObjectId(session.metadata.bookingId),
-          },
-          {
-            $set: {
-              paymentStatus: "Paid",
-              transactionId: session.payment_intent,
-              updatedAt: new Date().toISOString(),
-            },
-          }
-        );
-
-        return res.send({
-          transactionId: session.payment_intent,
-          paymentId: result.insertedId,
-        });
+      if (session.payment_status !== "paid") {
+        return res.send({ success: false, message: "Payment not completed" });
       }
-      res.send(
-        res.send({
+
+      const bookingId = session.metadata.bookingId;
+      const query = { _id: new ObjectId(bookingId) };
+      const update = {
+        $set: {
+          paymentStatus: "Paid",
           transactionId: session.payment_intent,
-          paymentId: existingPayment._id,
-        })
-      );
+          updatedAt: new Date(),
+        },
+      };
+
+      const result = await bookingsCollection.updateOne(query, update);
+
+      const paymentRecord = {
+        paymentId: session.metadata.bookingId,
+        transactionId: session.payment_intent,
+        customer: session.metadata.customer,
+        status: "completed",
+        serviceName: session.metadata.serviceName,
+        quantity: 1,
+        price: session.amount_total / 100,
+        currency: session.currency.toUpperCase(),
+        paymentDate: new Date().toISOString(),
+      };
+
+      const resultPayment = await paymentsCollection.insertOne(paymentRecord);
+
+      return res.send({
+        success: true,
+        modifyBooking: result,
+        transactionId: session.payment_intent,
+        paymentId: resultPayment.insertedId,
+        message: "Payment verified and booking updated successfully",
+      });
     });
 
-    //  app.post("/dashboard/my-bookings", async (req, res) => {
-    //    const { sessionId } = req.body;
-    //    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    //    console.log(session);
-    //    const payments = await paymentsCollection.findOne({
-    //      _id: new ObjectId(session.metadata.bookingId),
-    //    });
-    //    const booking = await bookingsCollection.findOne({
-    //      transactionId: session.payment_intent,
-    //    });
-
-    //    // Save payment record
-    //    if (session.status === "complete" && payments && !booking) {
-    //      const paymentRecord = {
-    //        paymentId: session.metadata.bookingId,
-    //        transactionId: session.payment_intent,
-    //        customer: session.metadata.customer,
-    //        status: "pending",
-    //        decorator: payments.seller,
-    //        name: payments.name,
-    //        category: payments.category,
-    //        quantity: 1,
-    //        price: session.amount_total / 100,
-    //        image: payments?.image,
-    //      };
-    //      const result = await paymentsCollection.insertOne(paymentRecord);
-    //      //  await bookingsCollection.updateOne(
-    //      //    {
-    //      //      _id: new ObjectId(session.metadata.bookingId),
-    //      //    },
-    //      //    { $inc: { quantity: -1 } }
-    //      //  );
-
-    //      return res.send({
-    //        transactionId: session.payment_intent,
-    //        paymentsId: result.insertedId,
-    //      });
-    //    }
-    //    res.send(
-    //      res.send({
-    //        transactionId: session.payment_intent,
-    //        paymentsId: booking._id,
-    //      })
-    //    );
-    //  });
-
-    // Get all bookings for a specific user
-    // app.get("/bookings/user/:email", async (req, res) => {
-    //   const email = req.params.email;
-
-    //    if (req.decoded.email !== email) {
-    //      return res.status(403).send({ message: "Forbidden access" });
-    //   }
-
-    //    const bookings = await bookingsCollection
-    //      .find({ userEmail: email })
-    //      .sort({ createdAt: -1 })
-    //      .toArray();
-
-    //    res.send(bookings);
-    // });
-
-    // Get a single booking by ID
-    // app.get("/bookings/:id", async (req, res) => {
-    //   try {
-    //     const id = req.params.id;
-    //     const booking = await bookingsCollection.findOne({
-    //       _id: new ObjectId(id),
-    //     });
-
-    //     if (!booking) {
-    //       return res.status(404).send({ message: "Booking not found" });
-    //     }
-
-    //     if (req.decoded.email !== booking.userEmail) {
-    //       return res.status(403).send({ message: "Forbidden access" });
-    //     }
-
-    //     res.send(booking);
-    //   } catch (error) {
-    //     console.error("Get booking error:", error);
-    //     res.status(500).send({ message: "Failed to fetch booking" });
-    //   }
-    // });
-
-    // Cancel/Delete a booking
-    // app.delete("/bookings/:id", async (req, res) => {
-    //   try {
-    //     const id = req.params.id;
-
-    //     const booking = await bookingsCollection.findOne({
-    //       _id: new ObjectId(id),
-    //     });
-
-    //     if (!booking) {
-    //       return res.status(404).send({ message: "Booking not found" });
-    //     }
-
-    //     if (req.decoded.email !== booking.userEmail) {
-    //       return res.status(403).send({ message: "Forbidden access" });
-    //     }
-
-    //     // Check if booking is already paid
-    //     if (booking.paymentStatus === "Paid") {
-    //       return res.status(400).send({
-    //         message: "Cannot cancel a paid booking. Please contact support.",
-    //       });
-    //     }
-
-    //     const result = await bookingsCollection.deleteOne({
-    //       _id: new ObjectId(id),
-    //     });
-
-    //     res.send(result);
-    //   } catch (error) {
-    //     console.error("Delete booking error:", error);
-    //     res.status(500).send({ message: "Failed to cancel booking" });
-    //   }
-    // });
-
-    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );

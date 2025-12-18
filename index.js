@@ -7,15 +7,8 @@ const admin = require("firebase-admin");
 const serviceAccount = require("./homeDecorationServiceAdminSDK.json");
 const app = express();
 const port = process.env.PORT || 5000;
-// const crypto = require("crypto");
 
-// function generateTrackingId() {
-//   const prefix = "PRCL"; // your brand prefix
-//   const date = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
-//   const random = crypto.randomBytes(3).toString("hex").toUpperCase(); // 6-char random hex
 
-//   return `${prefix}-${date}-${random}`;
-// }
 
 app.use(cors());
 app.use(express.json());
@@ -34,21 +27,22 @@ const client = new MongoClient(uri, {
   },
 });
 
-// JWT Verification Middleware
-// const verifyJWT = (req, res, next) => {
-//   const authorization = req.headers.authorization;
-//   if (!authorization) {
-//     return res.status(401).send({ message: "Unauthorized access" });
-//   }
-//   const token = authorization.split(" ")[1];
-//   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-//     if (err) {
-//       return res.status(401).send({ message: "Unauthorized access" });
-//     }
-//     req.decoded = decoded;
-//     next();
-//   });
-// };
+// jwt middlewares
+const verifyJWT = async (req, res, next) => {
+  const token = req?.headers?.authorization?.split(' ')[1]
+  console.log(token)
+  if (!token) return res.status(401).send({ message: 'Unauthorized Access!' })
+  try {
+    const decoded = await admin.auth().verifyIdToken(token)
+    req.tokenEmail = decoded.email
+    console.log(decoded)
+    next()
+  } catch (err) {
+    console.log(err)
+    return res.status(401).send({ message: 'Unauthorized Access!', err })
+  }
+}
+
 
 async function run() {
   try {
@@ -60,19 +54,12 @@ async function run() {
     const paymentsCollection = db.collection("payments");
     const usersCollection = db.collection("users");
 
-    // JWT token
-    //  app.post("/jwt", async (req, res) => {
-    //    const user = req.body;
-    //    const token = jwt.sign(user, process.env.JWT_SECRET, {
-    //      expiresIn: "7d",
-    //    });
-    //    res.send({ token });
-    //  });
 
     app.get("/services", async (req, res) => {
       const result = await serviceCollection.find().toArray();
       res.send(result);
     });
+
     app.get("/services/:id", async (req, res) => {
       const id = req.params.id;
       const service = await serviceCollection.findOne({
@@ -85,6 +72,58 @@ async function run() {
       const newService = req.body;
       const result = await serviceCollection.insertOne(newService);
       res.send(result);
+    });
+
+    app.put("/services/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const updatedService = req.body;
+
+        console.log("📝 Updating service:", id);
+
+        // Remove _id from update object
+        delete updatedService._id;
+
+        // Add update timestamp
+        updatedService.updatedAt = new Date();
+
+        const result = await serviceCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedService }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Service not found" });
+        }
+
+        console.log("✅ Service updated successfully");
+        res.send(result);
+      } catch (error) {
+        console.error("❌ Update service error:", error);
+        res.status(500).send({ message: "Failed to update service" });
+      }
+    });
+
+    app.delete("/services/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        console.log("🗑️ Deleting service:", id);
+
+        const result = await serviceCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ message: "Service not found" });
+        }
+
+        console.log("✅ Service deleted successfully");
+        res.send(result);
+      } catch (error) {
+        console.error("❌ Delete service error:", error);
+        res.status(500).send({ message: "Failed to delete service" });
+      }
     });
 
     // Create a new booking
@@ -195,7 +234,7 @@ async function run() {
     });
 
     // get all service for a decorator by email
-    app.get("/my-inventory/user/:email", async (req, res) => {
+    app.get("/my-project/user/:email", async (req, res) => {
       const email = req.params.email;
 
       const result = await serviceCollection
@@ -249,10 +288,8 @@ async function run() {
       res.send({ url: session.url });
     });
 
-    
-    
     app.patch("/payment-success", async (req, res) => {
-      const { sessionId } = req.body; 
+      const { sessionId } = req.body;
 
       const session = await stripe.checkout.sessions.retrieve(sessionId);
 
@@ -293,6 +330,44 @@ async function run() {
         paymentId: resultPayment.insertedId,
         message: "Payment verified and booking updated successfully",
       });
+    });
+
+    app.post("/user", async (req, res) => {
+      const userData = req.body;
+      console.log(userData);
+
+      userData.created_at = new Date().toISOString();
+      userData.last_loggedIn = new Date().toDateString();
+
+      userData.role = "customer";
+
+      const query = {
+        email: userData.email,
+      };
+
+      const alreadyExists = await usersCollection.findOne(query);
+      console.log("user already exists", alreadyExists);
+
+      if (alreadyExists) {
+        console.log("update user info");
+        const result = await usersCollection.updateOne(query, {
+          $set: {
+            last_loggedIn: new Date().toDateString(),
+          },
+        });
+        return res.send(result);
+      }
+
+      console.log("save in new user info");
+      const result = await usersCollection.insertOne(userData);
+      res.send(result);
+    });
+
+    // get a user's role
+    app.get("/user/role/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.findOne({ email });
+      res.send({ role: result?.role });
     });
 
     console.log(

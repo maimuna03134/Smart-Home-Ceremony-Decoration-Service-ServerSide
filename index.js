@@ -53,7 +53,7 @@ async function run() {
     const bookingsCollection = db.collection("bookings");
     const paymentsCollection = db.collection("payments");
     const usersCollection = db.collection("users");
-
+    const decoratorRequest = db.collection("decorator");
 
     app.get("/services", async (req, res) => {
       const result = await serviceCollection.find().toArray();
@@ -369,6 +369,113 @@ async function run() {
       const result = await usersCollection.findOne({ email });
       res.send({ role: result?.role });
     });
+
+    // save become-decorator request
+    app.post("/become-decorator/:email", async (req, res) => {
+      const email = req.params.email;
+      const alreadyExists = await decoratorRequest.findOne({ email });
+      if (alreadyExists)
+        return res
+          .status(409)
+          .send({ message: "Already requested, wait please." });
+
+      const result = await decoratorRequest.insertOne({ email });
+      res.send(result);
+    });
+
+    // get all decorator requests for admin
+    app.get("/decorator-requests/:email", async (req, res) => {
+      const result = await decoratorRequest.find().toArray();
+      res.send(result);
+    });
+
+    // update a user's role
+    app.patch("/update-role", async (req, res) => {
+      const { email, role } = req.body;
+      console.log("Updating role for:", email, "New role:", role);
+
+      const result = await usersCollection.updateOne(
+        { email: email.trim().toLowerCase() },
+        { $set: { role } }
+      );
+
+      await decoratorRequest.deleteOne({ email });
+      console.log("Update result:", result);
+
+      res.send(result);
+    });
+
+    // GET - All bookings for admin
+    app.get("/bookings", async (req, res) => {
+      try {
+        const bookings = await bookingsCollection
+          .find()
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(bookings);
+      } catch (error) {
+        console.error("Error fetching all bookings:", error);
+        res.status(500).send({ message: "Failed to fetch bookings" });
+      }
+    });
+
+    // PATCH - Assign decorator to booking
+    app.patch("/bookings/:id/assign-decorator", async (req, res) => {
+      try {
+        const bookingId = req.params.id;
+        const { decoratorId, decoratorName, decoratorEmail } = req.body;
+
+        if (!decoratorId || !decoratorName || !decoratorEmail) {
+          return res.status(400).send({
+            message: "Decorator information is required",
+          });
+        }
+
+        const booking = await bookingsCollection.findOne({
+          _id: new ObjectId(bookingId),
+        });
+
+        if (!booking) {
+          return res.status(404).send({ message: "Booking not found" });
+        }
+
+        if (booking.paymentStatus !== "paid") {
+          return res.status(400).send({
+            message: "Payment must be completed before assigning decorator",
+          });
+        }
+
+        const result = await bookingsCollection.updateOne(
+          { _id: new ObjectId(bookingId) },
+          {
+            $set: {
+              decoratorId: decoratorId,
+              decoratorName: decoratorName,
+              decoratorEmail: decoratorEmail,
+              serviceStatus: "assigned",
+              assignedAt: new Date(),
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res.status(400).send({
+            message: "Failed to assign decorator",
+          });
+        }
+
+        res.send({
+          success: true,
+          message: "Decorator assigned successfully",
+          data: { bookingId, decoratorName, serviceStatus: "assigned" },
+        });
+      } catch (error) {
+        console.error("Error assigning decorator:", error);
+        res.status(500).send({ message: "Failed to assign decorator" });
+      }
+    });
+
 
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"

@@ -478,17 +478,34 @@ async function run() {
         const updatedDoc = {
           $set: {
             status: status,
-            workStatus: "available",
           },
         };
+        //  Set workStatus based on status
 
+        if (status === "approved") {
+          updatedDoc.$set.workStatus = "available";
+        } else if (status === "disabled") {
+          updatedDoc.$set.workStatus = "unavailable";
+        } else if (status === "rejected") {
+          updatedDoc.$set.workStatus = "unavailable";
+        }
         const result = await decoratorCollection.updateOne(query, updatedDoc);
 
-        if (status === "approved" && email) {
-          await usersCollection.updateOne(
-            { email },
-            { $set: { role: "decorator" } }
-          );
+        // Update user role in usersCollection
+        if (email) {
+          if (status === "approved") {
+            // Set role to decorator when approved
+            await usersCollection.updateOne(
+              { email },
+              { $set: { role: "decorator" } }
+            );
+          } else if (status === "disabled" || status === "rejected") {
+            // Remove decorator role when disabled/rejected
+            await usersCollection.updateOne(
+              { email },
+              { $set: { role: "user" } }
+            );
+          }
         }
 
         res.send(result);
@@ -503,7 +520,21 @@ async function run() {
         const id = req.params.id;
 
         const query = { _id: new ObjectId(id) };
+
+        // Get decorator info before deleting
+        const decorator = await decoratorCollection.findOne(query);
+
+        // Delete decorator
         const result = await decoratorCollection.deleteOne(query);
+
+        // Remove decorator role from user
+        if (decorator?.email) {
+          await usersCollection.updateOne(
+            { email: decorator.email },
+            { $set: { role: "user" } }
+          );
+        }
+
 
         res.send(result);
       } catch (error) {
@@ -511,9 +542,9 @@ async function run() {
         res.status(500).send({ message: "Failed to delete decorator" });
       }
     });
+    
 
     // admin related apis
-    //  All bookings for admin
     app.get("/bookings", async (req, res) => {
       try {
         const bookings = await bookingsCollection

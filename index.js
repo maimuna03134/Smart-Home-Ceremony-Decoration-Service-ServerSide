@@ -20,7 +20,7 @@ const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
-    strict: true,
+    strict: false,
     deprecationErrors: true,
   },
 });
@@ -50,12 +50,62 @@ async function run() {
     const bookingsCollection = db.collection("bookings");
     const paymentsCollection = db.collection("payments");
     const usersCollection = db.collection("users");
-    const decoratorRequest = db.collection("decorator_request");
     const decoratorCollection = db.collection("decorators");
 
-    app.get("/services", async (req, res) => {
-      const result = await serviceCollection.find().toArray();
+    // services related apis
+    app.post("/services", async (req, res) => {
+      const newService = req.body;
+      const result = await serviceCollection.insertOne(newService);
       res.send(result);
+    });
+
+    app.get("/services", async (req, res) => {
+      try {
+        const { search, category, minPrice, maxPrice } = req.query;
+
+        let query = {};
+
+        if (search) {
+          query.name = { $regex: search, $options: "i" };
+        }
+
+        if (category && category !== "all") {
+          query.category = category;
+        }
+
+        if (minPrice || maxPrice) {
+          query.price = {};
+          if (minPrice) {
+            query.price.$gte = parseFloat(minPrice);
+          }
+          if (maxPrice) {
+            query.price.$lte = parseFloat(maxPrice);
+          }
+        }
+
+        const result = await serviceCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Error fetching services:", error);
+        res.status(500).send({ message: "Failed to fetch services" });
+      }
+    });
+
+    // Get all unique categories for filter dropdown
+    app.get("/services/categories/all", async (req, res) => {
+      try {
+        if (!serviceCollection) {
+          return res
+            .status(500)
+            .send({ message: "service collection not initialized" });
+        }
+        const categories = await serviceCollection.distinct("category");
+        // console.log('Categories found:', categories)
+        res.send(categories || []);
+      } catch (error) {
+        console.error("Error fetching categories:", error);
+        res.status(500).send({ message: "Failed to fetch categories" });
+      }
     });
 
     app.get("/services/:id", async (req, res) => {
@@ -66,12 +116,6 @@ async function run() {
       res.send(service);
     });
 
-    app.post("/services", async (req, res) => {
-      const newService = req.body;
-      const result = await serviceCollection.insertOne(newService);
-      res.send(result);
-    });
-
     app.put("/services/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -79,10 +123,8 @@ async function run() {
 
         console.log("📝 Updating service:", id);
 
-        // Remove _id from update object
         delete updatedService._id;
 
-        // Add update timestamp
         updatedService.updatedAt = new Date();
 
         const result = await serviceCollection.updateOne(
@@ -94,10 +136,10 @@ async function run() {
           return res.status(404).send({ message: "Service not found" });
         }
 
-        console.log("✅ Service updated successfully");
+        console.log("Service updated successfully");
         res.send(result);
       } catch (error) {
-        console.error("❌ Update service error:", error);
+        console.error("Update service error:", error);
         res.status(500).send({ message: "Failed to update service" });
       }
     });
@@ -377,18 +419,17 @@ async function run() {
       res.send({ role: result?.role });
     });
 
- app.patch("/update-role", async (req, res) => {
-   const { email, role } = req.body;
-   console.log("Updating role for:", email, "New role:", role);
+    app.patch("/update-role", async (req, res) => {
+      const { email, role } = req.body;
+      console.log("Updating role for:", email, "New role:", role);
 
-   const result = await usersCollection.updateOne(
-     { email: email.trim().toLowerCase() },
-     { $set: { role } }
-   );
+      const result = await usersCollection.updateOne(
+        { email: email.trim().toLowerCase() },
+        { $set: { role } }
+      );
 
-   res.send(result);
- });
-
+      res.send(result);
+    });
 
     // decorator related apis
     app.post("/become-decorator", async (req, res) => {
@@ -471,17 +512,7 @@ async function run() {
       }
     });
 
-    // app.get("/decorator-requests", async (req, res) => {
-    //   const result = await decoratorCollection
-    //     .find()
-    //     .sort({ createdAtd: -1 })
-    //     .toArray();
-    //   res.send(result);
-    // });
-
-    // update a user's role
-
-   
+    // admin related apis
     //  All bookings for admin
     app.get("/bookings", async (req, res) => {
       try {
@@ -496,20 +527,41 @@ async function run() {
       }
     });
 
-    //  All paid bookings without decorator assigned
-    app.get("/bookings/paid", async (req, res) => {
+    // Cancel booking by admin
+    app.patch("/bookings/:id/cancel", async (req, res) => {
       try {
-        const paidBookings = await bookingsCollection
-          .find({
-            paymentStatus: "paid",
-            $or: [{ decoratorId: { $exists: false } }, { decoratorId: null }],
-          })
-          .sort({ createdAt: -1 })
-          .toArray();
-        res.send(paidBookings);
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+
+        // Get booking info to check if decorator was assigned
+        const booking = await bookingsCollection.findOne(query);
+
+        if (!booking) {
+          return res.status(404).send({ message: "Booking not found" });
+        }
+
+        // Update booking status to cancelled_by_admin
+        const updatedDoc = {
+          $set: {
+            status: "cancelled_by_admin",
+            cancelledAt: new Date(),
+          },
+        };
+
+        const result = await bookingsCollection.updateOne(query, updatedDoc);
+
+        // If decorator was assigned, make them available again
+        if (booking.decoratorId) {
+          await decoratorCollection.updateOne(
+            { _id: new ObjectId(booking.decoratorId) },
+            { $set: { workStatus: "available" } }
+          );
+        }
+
+        res.send(result);
       } catch (error) {
-        console.error("Error fetching paid bookings:", error);
-        res.status(500).send({ message: "Failed to fetch paid bookings" });
+        console.error("Error cancelling booking:", error);
+        res.status(500).send({ message: "Failed to cancel booking" });
       }
     });
 

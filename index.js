@@ -413,16 +413,6 @@ async function run() {
       res.send(result);
     });
 
-    // get all service for a decorator by email
-    // app.get("/my-project/user/:email", async (req, res) => {
-    //   const email = req.params.email;
-
-    //   const result = await serviceCollection
-    //     .find({ "decorator.email": email })
-    //     .toArray();
-    //   res.send(result);
-    // });
-
     // Get all payments for a user
     app.get("/payments/user/:email", verifyFBToken, async (req, res) => {
       const email = req.params.email;

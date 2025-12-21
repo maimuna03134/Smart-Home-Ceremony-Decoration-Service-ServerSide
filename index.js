@@ -596,10 +596,10 @@ async function run() {
           name,
           email,
           district,
-          specialties: specialties || [], 
+          specialties: specialties || [],
           status: "pending",
           workStatus: "available",
-          rating: 0, 
+          rating: null,
           completedProjects: 0,
           reviews: 0,
           bio: "",
@@ -643,33 +643,35 @@ async function run() {
           const { status, email } = req.body;
           const id = req.params.id;
 
-          const query = { _id: new ObjectId(id) };
-          const updatedDoc = {
-            $set: {
-              status: status,
-            },
-          };
-          //  Set workStatus based on status
+          const updatedDoc = { $set: { status } };
 
           if (status === "approved") {
             updatedDoc.$set.workStatus = "available";
-          } else if (status === "disabled") {
-            updatedDoc.$set.workStatus = "unavailable";
-          } else if (status === "rejected") {
+
+            const randomRating = (Math.random() * (5.0 - 4.0) + 4.0).toFixed(1);
+            updatedDoc.$set.rating = parseFloat(randomRating);
+
+            updatedDoc.$set.completedProjects =
+              Math.floor(Math.random() * 30) + 5;
+            updatedDoc.$set.reviews = Math.floor(Math.random() * 25) + 3; 
+
+            console.log(`Assigned rating: ${randomRating}`);
+          } else if (status === "disabled" || status === "rejected") {
             updatedDoc.$set.workStatus = "unavailable";
           }
-          const result = await decoratorCollection.updateOne(query, updatedDoc);
 
-          // Update user role in usersCollection
+          const result = await decoratorCollection.updateOne(
+            { _id: new ObjectId(id) },
+            updatedDoc
+          );
+
           if (email) {
             if (status === "approved") {
-              // Set role to decorator when approved
               await usersCollection.updateOne(
                 { email },
                 { $set: { role: "decorator" } }
               );
             } else if (status === "disabled" || status === "rejected") {
-              // Remove decorator role when disabled/rejected
               await usersCollection.updateOne(
                 { email },
                 { $set: { role: "user" } }
@@ -880,7 +882,7 @@ async function run() {
 
     app.get("/decorators/top", async (req, res) => {
       try {
-        const limit = parseInt(req.query.limit) || 6;
+        const limit = parseInt(req.query.limit) || 4;
 
         const topDecorators = await decoratorCollection
           .find({
@@ -897,45 +899,6 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch top decorators" });
       }
     });
-
-    app.patch(
-      "/decorators/:id/profile",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        try {
-          const id = req.params.id;
-          const {
-            rating,
-            specialties,
-            completedProjects,
-            reviews,
-            bio,
-            photo,
-          } = req.body;
-
-          const result = await decoratorCollection.updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $set: {
-                rating,
-                specialties,
-                completedProjects,
-                reviews,
-                bio,
-                photo,
-                updatedAt: new Date(),
-              },
-            }
-          );
-
-          res.send(result);
-        } catch (error) {
-          console.error("Error updating decorator profile:", error);
-          res.status(500).send({ message: "Failed to update profile" });
-        }
-      }
-    );
 
     // admin related apis
 

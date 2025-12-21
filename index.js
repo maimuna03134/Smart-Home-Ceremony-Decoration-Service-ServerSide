@@ -7,16 +7,19 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 const admin = require("firebase-admin");
-const serviceAccount = require("./homeDecorationServiceAdminSDK.json");
+// const serviceAccount = require("./homeDecorationServiceAdminSDK.json");
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-
 app.use(cors());
 app.use(express.json());
-
 
 const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASSWORD}@cluster0.imnpg23.mongodb.net/?appName=Cluster0`;
 
@@ -32,8 +35,8 @@ const client = new MongoClient(uri, {
 const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
 
-   if (!token) {
-     return res.status(401).send({ message: "unauthorized access" });
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
   }
 
   if (!token.startsWith("Bearer ")) {
@@ -42,7 +45,7 @@ const verifyFBToken = async (req, res, next) => {
       .status(401)
       .send({ message: "Unauthorized access - Invalid token format" });
   }
-  
+
   try {
     const idToken = token.split(" ")[1];
     const decoded = await admin.auth().verifyIdToken(idToken);
@@ -68,7 +71,7 @@ async function run() {
     // Role verification middlewares
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
-   
+
       const user = await usersCollection.findOne({ email });
 
       if (user?.role !== "admin") {
@@ -210,8 +213,8 @@ async function run() {
         }
         const bookingsData = {
           ...bookingData,
-          status: "awaiting_decorator",
-          paymentStatus: "paid",
+          status: "pending_payment",
+          paymentStatus: "Unpaid",
           createdAt: new Date(),
         };
 
@@ -258,14 +261,20 @@ async function run() {
           limit = 10,
           sortBy = "createdAt",
           sortOrder = "desc",
+          paymentStatus,
         } = req.query;
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const sortOptions = {};
         sortOptions[sortBy] = sortOrder === "asc" ? 1 : -1;
 
+        const query = {};
+        if (paymentStatus) {
+          query.paymentStatus = paymentStatus;
+        }
+
         const bookings = await bookingsCollection
-          .find()
+          .find(query)
           .sort(sortOptions)
           .skip(skip)
           .limit(parseInt(limit))
@@ -488,6 +497,7 @@ async function run() {
       const update = {
         $set: {
           paymentStatus: "Paid",
+          status: "awaiting_decorator",
           transactionId: session.payment_intent,
           updatedAt: new Date(),
         },
@@ -643,7 +653,7 @@ async function run() {
 
             updatedDoc.$set.completedProjects =
               Math.floor(Math.random() * 30) + 5;
-            updatedDoc.$set.reviews = Math.floor(Math.random() * 25) + 3; 
+            updatedDoc.$set.reviews = Math.floor(Math.random() * 25) + 3;
 
             console.log(`Assigned rating: ${randomRating}`);
           } else if (status === "disabled" || status === "rejected") {
@@ -1111,9 +1121,9 @@ async function run() {
       }
     );
 
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    // console.log(
+    //   "Pinged your deployment. You successfully connected to MongoDB!"
+    // );
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
